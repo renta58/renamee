@@ -1,72 +1,124 @@
 import streamlit as st
-import easyocr
 import os
 import re
-from PIL import Image
+import shutil
 import numpy as np
-
-# Folder untuk upload dan hasil rename
-UPLOAD_DIR = "upload_images"
-RENAMED_DIR = "renamed_images"
-
-# Fungsi memastikan direktori aman dibuat
-def safe_mkdir(path):
-    if os.path.isfile(path):
-        os.remove(path)
-    if not os.path.exists(path):
-        os.makedirs(path)
-
-# Buat direktori upload dan renamed (pastikan bukan file biasa)
-safe_mkdir(UPLOAD_DIR)
-safe_mkdir(RENAMED_DIR)
+from PIL import Image, ImageEnhance, ImageFilter
+import easyocr
 
 # Inisialisasi OCR
-reader = easyocr.Reader(['en'], gpu=False)
+reader = easyocr.Reader(['id', 'en'])
 
-# Fungsi deteksi kode wilayah
-def detect_kode(image):
+# Konstanta direktori
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.path.join(BASE_DIR, "upload_images")
+RENAMED_DIR = os.path.join(BASE_DIR, "renamed_images")
+
+# Membuat direktori jika belum ada
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
+if not os.path.exists(RENAMED_DIR):
+    os.makedirs(RENAMED_DIR)
+
+# Fungsi kompresi gambar
+def compress_image(input_path, output_path, max_size=(1024, 1024), quality=70):
+    try:
+        img = Image.open(input_path)
+        img.thumbnail(max_size)
+        img.save(output_path, optimize=True, quality=quality)
+        return output_path
+    except Exception as e:
+        print(f"[ERROR] Kompresi gagal untuk {input_path}: {e}")
+        return input_path
+
+# Fungsi preprocessing gambar
+def preprocess(img):
+    img = img.convert("L")
+    img = ImageEnhance.Contrast(img).enhance(2.0)
+    img = img.filter(ImageFilter.SHARPEN)
+    return img
+
+# Deteksi kode wilayah
+def detect_full_kode(img):
+    ocr_results = []
     for angle in [0, 90, 180, 270]:
-        rotated = image.rotate(angle, expand=True)
-        img_np = np.array(rotated)
-        results = reader.readtext(img_np)
-        for _, text, _ in results:
-            match = re.search(r'1209\d+', text)
-            if match:
-                return match.group(0)
-    return None
+        rotated = img.rotate(angle, expand=True)
+        processed = preprocess(rotated)
+        img_array = np.array(processed)
+        texts = reader.readtext(img_array, detail=0)
+        ocr_results.extend(texts)
 
-# Simpan gambar ke folder hasil rename
-def save_image(img, filename):
-    path = os.path.join(RENAMED_DIR, filename)
-    img.save(path)
+    combined_text = " ".join(ocr_results)
+    matches = re.findall(r"1209\d{3,}", combined_text)
+    return max(matches, key=len) if matches else None
 
-# Tampilan Streamlit
-st.title("📸 Rename Otomatis Gambar dengan Kode Wilayah (OCR)")
-st.write("Upload gambar, sistem akan membaca kode wilayah dan rename otomatis.")
+# Konfigurasi halaman
+st.set_page_config(page_title="OCR Rename App", layout="centered")
+st.title("📸 Rename Gambar Otomatis dengan OCR")
 
-uploaded_files = st.file_uploader("Unggah Gambar (jpg/jpeg/png)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+# Upload file
+uploaded_files = st.file_uploader(
+    "Unggah gambar (JPG, JPEG, PNG)", 
+    type=["jpg", "jpeg", "png"], 
+    accept_multiple_files=True
+)
 
 if uploaded_files:
-    renamed = []
-    gagal = []
+    renamed_count = 0
+    skipped_files = []
 
-    for file in uploaded_files:
-        img = Image.open(file).convert("RGB")
-        kode = detect_kode(img)
-        if kode:
-            new_name = f"Hasil_{kode}_beres.jpg"
-            save_image(img, new_name)
-            renamed.append(new_name)
-        else:
-            gagal.append(file.name)
+    for uploaded_file in uploaded_files:
+        file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
 
-    if renamed:
-        st.success(f"{len(renamed)} gambar berhasil di-rename.")
-        for name in renamed:
-            with open(os.path.join(RENAMED_DIR, name), "rb") as f:
-                st.download_button(f"Unduh {name}", data=f, file_name=name, mime="image/jpeg")
+        try:
+            compressed_path = os.path.join(UPLOAD_DIR, f"compressed_{uploaded_file.name}")
+            used_path = compress_image(file_path, compressed_path)
 
-    if gagal:
-        st.warning(f"{len(gagal)} gambar gagal dikenali kodenya:")
-        for g in gagal:
-            st.write(f"- {g}")
+            img = Image.open(used_path)
+            kode = detect_full_kode(img)
+
+            if kode and len(kode) >= 8:
+                ext = os.path.splitext(uploaded_file.name)[1]
+                new_filename = f"Hasil_{kode}_beres{ext}"
+                new_path = os.path.join(RENAMED_DIR, new_filename)
+
+                counter = 1
+                while os.path.exists(new_path):
+                    new_filename = f"Hasil_{kode}_{counter}_beres{ext}"
+                    new_path = os.path.join(RENAMED_DIR, new_filename)
+                    counter += 1
+
+                shutil.move(file_path, new_path)
+                renamed_count += 1
+            else:
+                skipped_files.append(uploaded_file.name)
+
+        except Exception as e:
+            skipped_files.append(uploaded_file.name)
+
+        finally:
+            if os.path.exists(compressed_path):
+                try:
+                    os.remove(compressed_path)
+                except:
+                    pass
+
+    # Ringkasan hasil
+    st.success(f"Total berhasil di-rename: {renamed_count}")
+    if skipped_files:
+        st.warning(f"Gagal membaca kode dari {len(skipped_files)} file:")
+        st.code("\n".join(skipped_files))
+
+    # Tampilkan tombol unduhan file hasil rename
+    if renamed_count:
+        st.subheader("📁 Unduh File yang Telah Diubah")
+        for fname in os.listdir(RENAMED_DIR):
+            fpath = os.path.join(RENAMED_DIR, fname)
+            with open(fpath, "rb") as f:
+                st.download_button(label=f"⬇️ {fname}", data=f, file_name=fname)
+
+# Footer
+st.markdown("---")
+st.markdown("📌 Aplikasi ini membaca kode wilayah dalam gambar dan mengganti namanya secara otomatis.")
