@@ -4,7 +4,7 @@ import shutil
 import easyocr
 from PIL import Image
 
-reader = easyocr.Reader(['en'])
+reader = easyocr.Reader(['en'], gpu=False)
 
 UPLOAD_DIR = "uploaded_images"
 RENAMED_DIR = "renamed_images"
