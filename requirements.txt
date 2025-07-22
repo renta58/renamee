@@ -4,4 +4,5 @@ opencv-python-headless
 Pillow
 numpy
 zipfile36
+gdown
 
