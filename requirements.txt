@@ -1,4 +1,5 @@
 streamlit
-pillow
-pytesseract
-
+easyocr
+opencv-python
+numpy
+filelock
