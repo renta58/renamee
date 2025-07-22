@@ -1,95 +1,57 @@
-import streamlit as st
 import os
-import re
-import shutil
-import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
-import easyocr
-from io import BytesIO
+import streamlit as st
+from PIL import Image
+import pytesseract
 
-reader = easyocr.Reader(['id', 'en'])
+# Direktori
+UPLOAD_DIR = "uploaded_images"
+RENAMED_DIR = "renamed_images"
 
-# Folder setup
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_DIR = os.path.join(BASE_DIR, "upload_images")
-RENAMED_DIR = os.path.join(BASE_DIR, "renamed_images")
+# Periksa dan buat folder dengan aman
+def safe_mkdir(directory):
+    if os.path.exists(directory):
+        if not os.path.isdir(directory):
+            os.remove(directory)  # hapus file yang bentrok
+            os.makedirs(directory)
+    else:
+        os.makedirs(directory)
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(RENAMED_DIR, exist_ok=True)
+safe_mkdir(UPLOAD_DIR)
+safe_mkdir(RENAMED_DIR)
 
-# Kompresi gambar
-def compress_image(img, output_path, max_size=(1024, 1024), quality=70):
-    img.thumbnail(max_size)
-    img.save(output_path, format='JPEG', optimize=True, quality=quality)
+# Judul aplikasi
+st.title("📷 OCR Rename App Sederhana")
 
-# Preprocessing
-def preprocess(img):
-    img = img.convert("L")
-    img = ImageEnhance.Contrast(img).enhance(2.0)
-    img = img.filter(ImageFilter.SHARPEN)
-    return img
-
-# OCR dari 4 arah
-def detect_full_kode(img):
-    for angle in [0, 90, 180, 270]:
-        rotated = img.rotate(angle, expand=True)
-        processed = preprocess(rotated)
-        texts = reader.readtext(np.array(processed), detail=0)
-        result = " ".join(texts)
-        matches = re.findall(r"1209\d{3,}", result)
-        if matches:
-            return max(matches, key=len)
-    return None
-
-# UI
-st.set_page_config(page_title="OCR Rename App", layout="centered")
-st.title("📸 Rename Gambar Otomatis")
-
-uploaded_files = st.file_uploader("Upload gambar (JPG/PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+# Upload gambar
+uploaded_files = st.file_uploader("Unggah satu atau beberapa gambar", accept_multiple_files=True, type=["jpg", "png", "jpeg"])
 
 if uploaded_files:
-    renamed = []
-    skipped = []
+    for uploaded_file in uploaded_files:
+        # Simpan sementara
+        file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
 
-    for file in uploaded_files:
-        file_bytes = BytesIO(file.read())
+        # Jalankan OCR
         try:
-            img = Image.open(file_bytes).convert("RGB")
-            temp_path = os.path.join(UPLOAD_DIR, file.name)
-            compress_image(img, temp_path)
+            image = Image.open(file_path)
+            ocr_result = pytesseract.image_to_string(image)
 
-            img = Image.open(temp_path)
-            kode = detect_full_kode(img)
-
-            if kode:
-                new_name = f"Hasil_{kode}_beres.jpg"
-                target_path = os.path.join(RENAMED_DIR, new_name)
-
-                # Hindari overwrite
-                i = 1
-                while os.path.exists(target_path):
-                    new_name = f"Hasil_{kode}_{i}_beres.jpg"
-                    target_path = os.path.join(RENAMED_DIR, new_name)
-                    i += 1
-
-                shutil.move(temp_path, target_path)
-                renamed.append(new_name)
+            # Ambil hasil 1 baris pertama yang non-kosong
+            for line in ocr_result.split("\n"):
+                clean_line = line.strip().replace(" ", "")
+                if clean_line:
+                    ocr_code = clean_line
+                    break
             else:
-                skipped.append(file.name)
+                ocr_code = "NOCODE"
 
+            # Buat nama baru
+            new_name = f"Hasil_{ocr_code}_beres{os.path.splitext(uploaded_file.name)[1]}"
+            new_path = os.path.join(RENAMED_DIR, new_name)
+            os.rename(file_path, new_path)
+
+            st.success(f"✔️ {uploaded_file.name} ➜ {new_name}")
+            st.image(new_path, width=300)
         except Exception as e:
-            skipped.append(file.name)
-            st.error(f"❌ Error saat proses {file.name}: {str(e)}")
-
-    st.success(f"✅ Berhasil rename: {len(renamed)} file")
-    if skipped:
-        st.warning("❗ Gagal dibaca (mungkin tidak ada kode):")
-        st.code("\n".join(skipped))
-
-    if renamed:
-        st.subheader("📥 Unduh hasil:")
-        for fname in renamed:
-            path = os.path.join(RENAMED_DIR, fname)
-            with open(path, "rb") as f:
-                st.download_button(f"Download {fname}", f, file_name=fname)
-
+            st.error(f"❌ Gagal memproses {uploaded_file.name}: {e}")
