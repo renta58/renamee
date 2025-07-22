@@ -1,5 +1,6 @@
 streamlit
 easyocr
-torch
 Pillow
+numpy
+gdown
 opencv-python-headless
