@@ -4,68 +4,69 @@ import os
 import re
 from PIL import Image
 import numpy as np
-from io import BytesIO
-import shutil
 
 # Folder untuk upload dan hasil rename
 UPLOAD_DIR = "upload_images"
 RENAMED_DIR = "renamed_images"
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(RENAMED_DIR, exist_ok=True)
+# Fungsi memastikan direktori aman dibuat
+def safe_mkdir(path):
+    if os.path.isfile(path):
+        os.remove(path)
+    if not os.path.exists(path):
+        os.makedirs(path)
 
-# Inisialisasi EasyOCR
+# Buat direktori upload dan renamed (pastikan bukan file biasa)
+safe_mkdir(UPLOAD_DIR)
+safe_mkdir(RENAMED_DIR)
+
+# Inisialisasi OCR
 reader = easyocr.Reader(['en'], gpu=False)
 
-# Fungsi deteksi kode wilayah menggunakan rotasi sudut
-def detect_full_kode(image):
+# Fungsi deteksi kode wilayah
+def detect_kode(image):
     for angle in [0, 90, 180, 270]:
         rotated = image.rotate(angle, expand=True)
         img_np = np.array(rotated)
         results = reader.readtext(img_np)
-        for (bbox, text, prob) in results:
+        for _, text, _ in results:
             match = re.search(r'1209\d+', text)
             if match:
                 return match.group(0)
     return None
 
-# Fungsi untuk menyimpan file hasil rename
+# Simpan gambar ke folder hasil rename
 def save_image(img, filename):
-    img.save(os.path.join(RENAMED_DIR, filename))
+    path = os.path.join(RENAMED_DIR, filename)
+    img.save(path)
 
-# Judul aplikasi
-st.title("📸 Rename Gambar Otomatis dengan OCR")
-st.write("Unggah gambar, dan aplikasi ini akan otomatis membaca kode wilayah dan mengganti nama file.")
+# Tampilan Streamlit
+st.title("📸 Rename Otomatis Gambar dengan Kode Wilayah (OCR)")
+st.write("Upload gambar, sistem akan membaca kode wilayah dan rename otomatis.")
 
-# Upload gambar
-uploaded_files = st.file_uploader("Unggah gambar (JPG, JPEG, PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("Unggah Gambar (jpg/jpeg/png)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 if uploaded_files:
-    renamed_files = []
-    failed_files = []
+    renamed = []
+    gagal = []
 
     for file in uploaded_files:
         img = Image.open(file).convert("RGB")
-        kode = detect_full_kode(img)
+        kode = detect_kode(img)
         if kode:
             new_name = f"Hasil_{kode}_beres.jpg"
             save_image(img, new_name)
-            renamed_files.append(new_name)
+            renamed.append(new_name)
         else:
-            failed_files.append(file.name)
+            gagal.append(file.name)
 
-    st.success(f"✅ {len(renamed_files)} gambar berhasil di-rename.")
-    if failed_files:
-        st.warning(f"⚠️ Gagal membaca kode wilayah dari {len(failed_files)} gambar:")
-        for f in failed_files:
-            st.write(f"- {f}")
+    if renamed:
+        st.success(f"{len(renamed)} gambar berhasil di-rename.")
+        for name in renamed:
+            with open(os.path.join(RENAMED_DIR, name), "rb") as f:
+                st.download_button(f"Unduh {name}", data=f, file_name=name, mime="image/jpeg")
 
-    if renamed_files:
-        st.subheader("📥 Unduh Gambar yang Sudah Di-Rename")
-        for file in renamed_files:
-            with open(os.path.join(RENAMED_DIR, file), "rb") as f:
-                st.download_button(label=f"Unduh {file}", data=f, file_name=file, mime="image/jpeg")
-
-    # Bersihkan folder upload
-    for file in os.listdir(UPLOAD_DIR):
-        os.remove(os.path.join(UPLOAD_DIR, file))
+    if gagal:
+        st.warning(f"{len(gagal)} gambar gagal dikenali kodenya:")
+        for g in gagal:
+            st.write(f"- {g}")
