@@ -5,118 +5,91 @@ import shutil
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 import easyocr
+from io import BytesIO
 
-# Inisialisasi OCR
 reader = easyocr.Reader(['id', 'en'])
 
-# Direktori penyimpanan
+# Folder setup
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "upload_images")
 RENAMED_DIR = os.path.join(BASE_DIR, "renamed_images")
 
-# Cek & buat direktori aman
-for folder in [UPLOAD_DIR, RENAMED_DIR]:
-    if not os.path.exists(folder):
-        try:
-            os.makedirs(folder)
-        except FileExistsError:
-            pass
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(RENAMED_DIR, exist_ok=True)
 
-# Fungsi kompresi
-def compress_image(input_path, output_path, max_size=(1024, 1024), quality=70):
-    try:
-        img = Image.open(input_path)
-        img.thumbnail(max_size)
-        img.save(output_path, optimize=True, quality=quality)
-        return output_path
-    except Exception as e:
-        print(f"[ERROR] Kompresi gagal untuk {input_path}: {e}")
-        return input_path
+# Kompresi gambar
+def compress_image(img, output_path, max_size=(1024, 1024), quality=70):
+    img.thumbnail(max_size)
+    img.save(output_path, format='JPEG', optimize=True, quality=quality)
 
-# Fungsi preprocessing
+# Preprocessing
 def preprocess(img):
-    img = img.convert("L")  # grayscale
+    img = img.convert("L")
     img = ImageEnhance.Contrast(img).enhance(2.0)
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
-# Deteksi kode wilayah dari 4 sudut
+# OCR dari 4 arah
 def detect_full_kode(img):
-    ocr_results = []
     for angle in [0, 90, 180, 270]:
         rotated = img.rotate(angle, expand=True)
         processed = preprocess(rotated)
-        img_array = np.array(processed)
-        texts = reader.readtext(img_array, detail=0)
-        ocr_results.extend(texts)
+        texts = reader.readtext(np.array(processed), detail=0)
+        result = " ".join(texts)
+        matches = re.findall(r"1209\d{3,}", result)
+        if matches:
+            return max(matches, key=len)
+    return None
 
-    combined_text = " ".join(ocr_results)
-    matches = re.findall(r"1209\d{3,}", combined_text)
-    return max(matches, key=len) if matches else None
-
-# Konfigurasi halaman
+# UI
 st.set_page_config(page_title="OCR Rename App", layout="centered")
-st.title("📸 Rename Gambar Otomatis dengan OCR")
+st.title("📸 Rename Gambar Otomatis")
 
-# Upload file
-uploaded_files = st.file_uploader("Unggah gambar (JPG, JPEG, PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("Upload gambar (JPG/PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 if uploaded_files:
-    renamed_count = 0
-    skipped_files = []
+    renamed = []
+    skipped = []
 
-    for uploaded_file in uploaded_files:
-        original_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
-        with open(original_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-
+    for file in uploaded_files:
+        file_bytes = BytesIO(file.read())
         try:
-            compressed_path = os.path.join(UPLOAD_DIR, f"compressed_{uploaded_file.name}")
-            used_path = compress_image(original_path, compressed_path)
+            img = Image.open(file_bytes).convert("RGB")
+            temp_path = os.path.join(UPLOAD_DIR, file.name)
+            compress_image(img, temp_path)
 
-            img = Image.open(used_path)
+            img = Image.open(temp_path)
             kode = detect_full_kode(img)
 
-            if kode and len(kode) >= 8:
-                ext = os.path.splitext(uploaded_file.name)[1]
-                new_filename = f"Hasil_{kode}_beres{ext}"
-                new_path = os.path.join(RENAMED_DIR, new_filename)
+            if kode:
+                new_name = f"Hasil_{kode}_beres.jpg"
+                target_path = os.path.join(RENAMED_DIR, new_name)
 
-                counter = 1
-                while os.path.exists(new_path):
-                    new_filename = f"Hasil_{kode}_{counter}_beres{ext}"
-                    new_path = os.path.join(RENAMED_DIR, new_filename)
-                    counter += 1
+                # Hindari overwrite
+                i = 1
+                while os.path.exists(target_path):
+                    new_name = f"Hasil_{kode}_{i}_beres.jpg"
+                    target_path = os.path.join(RENAMED_DIR, new_name)
+                    i += 1
 
-                shutil.move(original_path, new_path)
-                renamed_count += 1
+                shutil.move(temp_path, target_path)
+                renamed.append(new_name)
             else:
-                skipped_files.append(uploaded_file.name)
+                skipped.append(file.name)
 
         except Exception as e:
-            skipped_files.append(uploaded_file.name)
+            skipped.append(file.name)
+            st.error(f"❌ Error saat proses {file.name}: {str(e)}")
 
-        finally:
-            if os.path.exists(compressed_path):
-                try:
-                    os.remove(compressed_path)
-                except:
-                    pass
+    st.success(f"✅ Berhasil rename: {len(renamed)} file")
+    if skipped:
+        st.warning("❗ Gagal dibaca (mungkin tidak ada kode):")
+        st.code("\n".join(skipped))
 
-    # Ringkasan
-    st.success(f"✅ Total berhasil di-rename: {renamed_count}")
-    if skipped_files:
-        st.warning("⚠️ Gagal membaca kode dari file berikut:")
-        st.code("\n".join(skipped_files))
+    if renamed:
+        st.subheader("📥 Unduh hasil:")
+        for fname in renamed:
+            path = os.path.join(RENAMED_DIR, fname)
+            with open(path, "rb") as f:
+                st.download_button(f"Download {fname}", f, file_name=fname)
 
-    # Download hasil rename
-    if renamed_count:
-        st.subheader("⬇️ Unduh File yang Telah Diubah")
-        for fname in os.listdir(RENAMED_DIR):
-            fpath = os.path.join(RENAMED_DIR, fname)
-            with open(fpath, "rb") as f:
-                st.download_button(label=f"📥 {fname}", data=f, file_name=fname)
-
-# Footer
-st.markdown("---")
-st.markdown("📌 Aplikasi ini membaca kode wilayah dari gambar dan mengganti namanya otomatis. Dibuat dengan ❤️ menggunakan EasyOCR dan Streamlit.")
