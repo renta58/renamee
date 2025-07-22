@@ -1,6 +1,7 @@
 streamlit
-pillow
 easyocr
-numpy
-pandas
 opencv-python-headless
+Pillow
+numpy
+zipfile36
+
