@@ -8,12 +8,15 @@ import numpy as np
 import easyocr
 import re
 import io
+import shutil
 
 # Inisialisasi OCR reader
 reader = easyocr.Reader(['id', 'en'])
 
 # File log
 LOG_PATH = "rename_log.csv"
+TEMP_FOLDER = "temp_upload"
+os.makedirs(TEMP_FOLDER, exist_ok=True)
 
 # Fungsi Preprocessing Gambar
 def preprocess(img):
@@ -72,72 +75,65 @@ if os.path.exists(LOG_PATH):
         zip_buffer.seek(0)
         st.download_button("📦 Unduh Semua Gambar (ZIP)", zip_buffer, file_name="semua_rename.zip")
 
-mode = st.radio("Pilih Mode:", ["📁 Scan Folder", "📤 Upload Gambar Satuan"])
+mode = st.radio("Pilih Mode:", ["📦 Upload ZIP", "📤 Upload Gambar Jamak"])
 
-# === Mode 1: Scan Folder ===
-if mode == "📁 Scan Folder":
-    folder_path = st.text_input("Masukkan path folder berisi gambar:")
+uploaded_files = []
 
-    if st.button("🚀 Mulai Proses Folder"):
-        if not os.path.exists(folder_path):
-            st.error("❌ Folder tidak ditemukan.")
-        else:
-            files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-            renamed = 0
-            failed = []
+if mode == "📦 Upload ZIP":
+    uploaded_zip = st.file_uploader("Upload file ZIP berisi gambar", type=["zip"])
+    if uploaded_zip is not None:
+        with zipfile.ZipFile(uploaded_zip, "r") as zip_ref:
+            zip_ref.extractall(TEMP_FOLDER)
+        uploaded_files = [
+            os.path.join(TEMP_FOLDER, f) for f in os.listdir(TEMP_FOLDER)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        ]
 
-            for file in files:
-                try:
-                    path = os.path.join(folder_path, file)
-                    img = Image.open(path)
-                    kode = detect_full_kode(img)
+elif mode == "📤 Upload Gambar Jamak":
+    manual_files = st.file_uploader("Upload beberapa gambar", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+    if manual_files:
+        for img_file in manual_files:
+            temp_path = os.path.join(TEMP_FOLDER, img_file.name)
+            with open(temp_path, "wb") as f:
+                f.write(img_file.read())
+            uploaded_files.append(temp_path)
 
-                    if kode:
-                        ext = os.path.splitext(file)[1]
-                        new_name = f"Hasil_{kode}_beres{ext}"
-                        new_path = os.path.join(folder_path, new_name)
+if uploaded_files:
+    st.success(f"{len(uploaded_files)} gambar berhasil dimuat. Siap untuk diproses!")
+    for file_path in uploaded_files:
+        try:
+            img = Image.open(file_path)
+            kode = detect_full_kode(img)
+            if kode:
+                ext = os.path.splitext(file_path)[1]
+                new_name = f"Hasil_{kode}_beres{ext}"
+                folder = os.path.dirname(file_path)
+                new_path = os.path.join(folder, new_name)
+                counter = 1
+                while os.path.exists(new_path):
+                    new_name = f"Hasil_{kode}_{counter}_beres{ext}"
+                    new_path = os.path.join(folder, new_name)
+                    counter += 1
+                os.rename(file_path, new_path)
+                log_rename(os.path.basename(file_path), new_name)
+            else:
+                st.warning(f"❌ Kode tidak ditemukan dalam gambar: {os.path.basename(file_path)}")
+        except Exception as e:
+            st.error(f"⚠️ Gagal memproses gambar: {file_path}\n{e}")
 
-                        counter = 1
-                        while os.path.exists(new_path):
-                            new_name = f"Hasil_{kode}_{counter}_beres{ext}"
-                            new_path = os.path.join(folder_path, new_name)
-                            counter += 1
+    # ZIP hasil rename
+    renamed_files = [f for f in os.listdir(TEMP_FOLDER) if f.lower().startswith("Hasil_")]
+    if renamed_files:
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zipf:
+            for f in renamed_files:
+                file_path = os.path.join(TEMP_FOLDER, f)
+                zipf.write(file_path, arcname=f)
+        zip_buffer.seek(0)
+        st.download_button("⬇️ Unduh Semua Hasil Rename", zip_buffer, file_name="hasil_rename.zip")
 
-                        os.rename(path, new_path)
-                        log_rename(file, new_name)
-                        renamed += 1
-                    else:
-                        failed.append(file)
-                except Exception as e:
-                    failed.append(file)
-
-            st.success(f"✅ {renamed} file berhasil di-rename.")
-            if failed:
-                st.warning(f"{len(failed)} file gagal diproses:")
-                st.code("\n".join(failed))
-
-# === Mode 2: Upload Gambar Tunggal ===
-elif mode == "📤 Upload Gambar Satuan":
-    uploaded_file = st.file_uploader("Upload satu gambar", type=["jpg", "jpeg", "png"])
-
-    if uploaded_file:
-        img = Image.open(uploaded_file)
-        st.image(img, caption="Gambar yang Diupload", use_column_width=True)
-
-        kode = detect_full_kode(img)
-        if kode:
-            ext = os.path.splitext(uploaded_file.name)[1]
-            new_name = f"Hasil_{kode}_beres{ext}"
-
-            # Simpan file hasil rename
-            with open(new_name, "wb") as f:
-                f.write(uploaded_file.read())
-
-            log_rename(uploaded_file.name, new_name)
-            st.success(f"✅ Gambar berhasil dinamai ulang: `{new_name}`")
-
-            with open(new_name, "rb") as f:
-                st.download_button("⬇️ Unduh Gambar", f, file_name=new_name)
-
-        else:
-            st.error("❌ Kode wilayah tidak ditemukan dalam gambar.")
+    # Bersihkan folder sementara
+    shutil.rmtree(TEMP_FOLDER)
+    os.makedirs(TEMP_FOLDER, exist_ok=True)
+else:
+    st.info("Silakan upload gambar untuk diproses.")
