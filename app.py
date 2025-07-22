@@ -1,57 +1,58 @@
 import os
+import shutil
 import streamlit as st
+import easyocr
 from PIL import Image
-import pytesseract
 
-# Direktori
-UPLOAD_DIR = "uploaded_images"
-RENAMED_DIR = "renamed_images"
+# Direktori penyimpanan
+UPLOAD_DIR = "uploaded"
+RENAMED_DIR = "renamed"
 
-# Periksa dan buat folder dengan aman
-def safe_mkdir(directory):
-    if os.path.exists(directory):
-        if not os.path.isdir(directory):
-            os.remove(directory)  # hapus file yang bentrok
-            os.makedirs(directory)
-    else:
-        os.makedirs(directory)
+# Membuat folder jika belum ada
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(RENAMED_DIR, exist_ok=True)
 
-safe_mkdir(UPLOAD_DIR)
-safe_mkdir(RENAMED_DIR)
+# Inisialisasi pembaca OCR
+reader = easyocr.Reader(['en'])
 
-# Judul aplikasi
-st.title("📷 OCR Rename App Sederhana")
+# Judul App
+st.title("📸 Rename Otomatis Gambar Berdasarkan Kode OCR")
 
-# Upload gambar
-uploaded_files = st.file_uploader("Unggah satu atau beberapa gambar", accept_multiple_files=True, type=["jpg", "png", "jpeg"])
+# Upload file gambar
+uploaded_files = st.file_uploader("Unggah satu atau lebih gambar", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 if uploaded_files:
+    st.write("📂 Hasil Proses Rename:")
+
     for uploaded_file in uploaded_files:
-        # Simpan sementara
-        file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
-        with open(file_path, "wb") as f:
+        # Simpan file ke folder upload
+        original_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
+        with open(original_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
 
-        # Jalankan OCR
+        # Buka gambar dan lakukan OCR
         try:
-            image = Image.open(file_path)
-            ocr_result = pytesseract.image_to_string(image)
+            image = Image.open(original_path).convert("RGB")
+            result = reader.readtext(original_path)
 
-            # Ambil hasil 1 baris pertama yang non-kosong
-            for line in ocr_result.split("\n"):
-                clean_line = line.strip().replace(" ", "")
-                if clean_line:
-                    ocr_code = clean_line
-                    break
+            # Ambil kode terdeteksi (teks pertama saja)
+            if result:
+                kode = result[0][1].replace(" ", "_")  # Hilangkan spasi
+                # Format nama baru
+                new_filename = f"Hasil_{kode}_beres{os.path.splitext(uploaded_file.name)[1]}"
+                new_path = os.path.join(RENAMED_DIR, new_filename)
+                shutil.copy(original_path, new_path)
+
+                st.success(f"✅ {uploaded_file.name} → {new_filename}")
             else:
-                ocr_code = "NOCODE"
+                st.warning(f"⚠️ Gagal deteksi teks dari {uploaded_file.name}")
 
-            # Buat nama baru
-            new_name = f"Hasil_{ocr_code}_beres{os.path.splitext(uploaded_file.name)[1]}"
-            new_path = os.path.join(RENAMED_DIR, new_name)
-            os.rename(file_path, new_path)
-
-            st.success(f"✔️ {uploaded_file.name} ➜ {new_name}")
-            st.image(new_path, width=300)
         except Exception as e:
             st.error(f"❌ Gagal memproses {uploaded_file.name}: {e}")
+
+# Tombol download massal (opsional)
+if os.listdir(RENAMED_DIR):
+    with st.expander("📥 Download semua file hasil rename"):
+        for filename in os.listdir(RENAMED_DIR):
+            with open(os.path.join(RENAMED_DIR, filename), "rb") as f:
+                st.download_button(f"Download {filename}", f, file_name=filename)
