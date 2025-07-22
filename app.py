@@ -1,124 +1,122 @@
 import streamlit as st
 import os
-import easyocr
+import re
 import shutil
-import uuid
-import json
-from datetime import datetime
+import numpy as np
+from PIL import Image, ImageEnhance, ImageFilter
+import easyocr
 
-# ------------------ Konstanta ------------------
-UPLOAD_DIR = "upload_images"
-RENAMED_DIR = "renamed_images"
-HISTORY_FILE = "rename_history.json"
-CREDENTIALS = {"admin": "admin123", "user": "user123"}  # Ubah sesuai kebutuhan
+# Inisialisasi OCR
+reader = easyocr.Reader(['id', 'en'])
 
-# ------------------ Buat Folder ------------------
-for path in [UPLOAD_DIR, RENAMED_DIR]:
-    if os.path.exists(path) and not os.path.isdir(path):
-        os.remove(path)  # hapus file jika bentrok
-    os.makedirs(path, exist_ok=True)
+# Direktori penyimpanan
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.path.join(BASE_DIR, "upload_images")
+RENAMED_DIR = os.path.join(BASE_DIR, "renamed_images")
 
-# ------------------ Fungsi Utilitas ------------------
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r") as f:
-            return json.load(f)
-    return {}
+# Cek & buat direktori aman
+for folder in [UPLOAD_DIR, RENAMED_DIR]:
+    if not os.path.exists(folder):
+        try:
+            os.makedirs(folder)
+        except FileExistsError:
+            pass
 
-def save_history(history):
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(history, f, indent=2)
-
-def add_history(username, original, renamed):
-    history = load_history()
-    if username not in history:
-        history[username] = []
-    history[username].append({
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "original": original,
-        "renamed": renamed
-    })
-    save_history(history)
-
-# ------------------ Fungsi OCR ------------------
-reader = easyocr.Reader(["en"])
-
-def detect_code_from_image(image_path):
+# Fungsi kompresi
+def compress_image(input_path, output_path, max_size=(1024, 1024), quality=70):
     try:
-        result = reader.readtext(image_path, detail=0)
-        for text in result:
-            if any(char.isdigit() for char in text):  # Ambil teks yang mengandung angka
-                return text.replace(" ", "_")
-        return "no_code"
-    except:
-        return "error"
+        img = Image.open(input_path)
+        img.thumbnail(max_size)
+        img.save(output_path, optimize=True, quality=quality)
+        return output_path
+    except Exception as e:
+        print(f"[ERROR] Kompresi gagal untuk {input_path}: {e}")
+        return input_path
 
-# ------------------ Login ------------------
-def login():
-    st.title("Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-    if st.button("Login"):
-        if username in CREDENTIALS and CREDENTIALS[username] == password:
-            st.session_state["username"] = username
-            st.success(f"Logged in as {username}")
-        else:
-            st.error("Username atau password salah.")
+# Fungsi preprocessing
+def preprocess(img):
+    img = img.convert("L")  # grayscale
+    img = ImageEnhance.Contrast(img).enhance(2.0)
+    img = img.filter(ImageFilter.SHARPEN)
+    return img
 
-# ------------------ Halaman Rename Gambar ------------------
-def rename_page():
-    st.title("OCR Rename Otomatis")
-    uploaded_files = st.file_uploader("Unggah gambar", accept_multiple_files=True, type=["png", "jpg", "jpeg"])
+# Deteksi kode wilayah dari 4 sudut
+def detect_full_kode(img):
+    ocr_results = []
+    for angle in [0, 90, 180, 270]:
+        rotated = img.rotate(angle, expand=True)
+        processed = preprocess(rotated)
+        img_array = np.array(processed)
+        texts = reader.readtext(img_array, detail=0)
+        ocr_results.extend(texts)
 
-    if uploaded_files:
-        for uploaded_file in uploaded_files:
-            unique_id = str(uuid.uuid4())
-            temp_path = os.path.join(UPLOAD_DIR, f"{unique_id}_{uploaded_file.name}")
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
+    combined_text = " ".join(ocr_results)
+    matches = re.findall(r"1209\d{3,}", combined_text)
+    return max(matches, key=len) if matches else None
 
-            detected = detect_code_from_image(temp_path)
-            new_name = f"Hasil_{detected}_beres{os.path.splitext(uploaded_file.name)[1]}"
-            new_path = os.path.join(RENAMED_DIR, new_name)
-            shutil.copy(temp_path, new_path)
+# Konfigurasi halaman
+st.set_page_config(page_title="OCR Rename App", layout="centered")
+st.title("📸 Rename Gambar Otomatis dengan OCR")
 
-            add_history(st.session_state["username"], uploaded_file.name, new_name)
-            st.success(f"✔️ {uploaded_file.name} ➜ {new_name}")
+# Upload file
+uploaded_files = st.file_uploader("Unggah gambar (JPG, JPEG, PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-        st.info("✅ Semua gambar telah diubah namanya dan disimpan di folder 'renamed_images'.")
+if uploaded_files:
+    renamed_count = 0
+    skipped_files = []
 
-# ------------------ Halaman Riwayat Rename ------------------
-def history_page():
-    st.title("Riwayat Rename Gambar")
-    history = load_history()
-    username = st.session_state["username"]
+    for uploaded_file in uploaded_files:
+        original_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
+        with open(original_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
 
-    if username == "admin":
-        st.subheader("👑 Admin - Semua Riwayat")
-        for user, records in history.items():
-            st.write(f"### 📁 Pengguna: {user}")
-            for record in records:
-                st.write(f"- ⏱️ {record['timestamp']}: `{record['original']}` → `{record['renamed']}`")
-    else:
-        user_history = history.get(username, [])
-        st.subheader(f"📜 Riwayat {username}")
-        if user_history:
-            for record in user_history:
-                st.write(f"- ⏱️ {record['timestamp']}: `{record['original']}` → `{record['renamed']}`")
-        else:
-            st.info("Belum ada riwayat.")
+        try:
+            compressed_path = os.path.join(UPLOAD_DIR, f"compressed_{uploaded_file.name}")
+            used_path = compress_image(original_path, compressed_path)
 
-# ------------------ Main App ------------------
-if "username" not in st.session_state:
-    login()
-else:
-    st.sidebar.title("Navigasi")
-    menu = st.sidebar.radio("Pilih halaman:", ["Rename Gambar", "Riwayat Rename", "Logout"])
+            img = Image.open(used_path)
+            kode = detect_full_kode(img)
 
-    if menu == "Rename Gambar":
-        rename_page()
-    elif menu == "Riwayat Rename":
-        history_page()
-    elif menu == "Logout":
-        del st.session_state["username"]
-        st.experimental_rerun()
+            if kode and len(kode) >= 8:
+                ext = os.path.splitext(uploaded_file.name)[1]
+                new_filename = f"Hasil_{kode}_beres{ext}"
+                new_path = os.path.join(RENAMED_DIR, new_filename)
+
+                counter = 1
+                while os.path.exists(new_path):
+                    new_filename = f"Hasil_{kode}_{counter}_beres{ext}"
+                    new_path = os.path.join(RENAMED_DIR, new_filename)
+                    counter += 1
+
+                shutil.move(original_path, new_path)
+                renamed_count += 1
+            else:
+                skipped_files.append(uploaded_file.name)
+
+        except Exception as e:
+            skipped_files.append(uploaded_file.name)
+
+        finally:
+            if os.path.exists(compressed_path):
+                try:
+                    os.remove(compressed_path)
+                except:
+                    pass
+
+    # Ringkasan
+    st.success(f"✅ Total berhasil di-rename: {renamed_count}")
+    if skipped_files:
+        st.warning("⚠️ Gagal membaca kode dari file berikut:")
+        st.code("\n".join(skipped_files))
+
+    # Download hasil rename
+    if renamed_count:
+        st.subheader("⬇️ Unduh File yang Telah Diubah")
+        for fname in os.listdir(RENAMED_DIR):
+            fpath = os.path.join(RENAMED_DIR, fname)
+            with open(fpath, "rb") as f:
+                st.download_button(label=f"📥 {fname}", data=f, file_name=fname)
+
+# Footer
+st.markdown("---")
+st.markdown("📌 Aplikasi ini membaca kode wilayah dari gambar dan mengganti namanya otomatis. Dibuat dengan ❤️ menggunakan EasyOCR dan Streamlit.")
