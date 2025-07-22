@@ -7,15 +7,19 @@ from PIL import Image, ImageEnhance, ImageFilter
 import easyocr
 
 # Inisialisasi OCR
-reader = easyocr.Reader(['id', 'en'], gpu=False)
+reader = easyocr.Reader(['id', 'en'])
 
-# Direktori tetap
+# Konstanta direktori
 UPLOAD_DIR = "upload_images"
 RENAMED_DIR = "renamed_images"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(RENAMED_DIR, exist_ok=True)
 
-# Kompresi gambar
+# Pastikan direktori tersedia dan tidak konflik dengan file
+for folder in [UPLOAD_DIR, RENAMED_DIR]:
+    if os.path.isfile(folder):
+        os.remove(folder)
+    os.makedirs(folder, exist_ok=True)
+
+# Fungsi kompresi gambar
 def compress_image(input_path, output_path, max_size=(1024, 1024), quality=70):
     try:
         img = Image.open(input_path)
@@ -23,18 +27,18 @@ def compress_image(input_path, output_path, max_size=(1024, 1024), quality=70):
         img.save(output_path, optimize=True, quality=quality)
         return output_path
     except Exception as e:
-        print(f"[ERROR] Gagal kompres {input_path}: {e}")
+        print(f"[ERROR] Kompresi gagal untuk {input_path}: {e}")
         return input_path
 
-# Preprocessing
+# Fungsi preprocessing gambar
 def preprocess(img):
     img = img.convert("L")
-    img = ImageEnhance.Contrast(img).enhance(2.5)
+    img = ImageEnhance.Contrast(img).enhance(2.0)
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
-# Deteksi hanya kode dengan pola "1209xxx"
-def detect_kode_1209(img):
+# Deteksi kode wilayah
+def detect_full_kode(img):
     ocr_results = []
     for angle in [0, 90, 180, 270]:
         rotated = img.rotate(angle, expand=True)
@@ -43,21 +47,21 @@ def detect_kode_1209(img):
         texts = reader.readtext(img_array, detail=0)
         ocr_results.extend(texts)
 
-    all_text = " ".join(ocr_results)
-    
-    # Temukan hanya pola 1209 diikuti 3 digit atau lebih
-    matches = re.findall(r"1209\d{3,}", all_text)
+    # Ambil semua kode yang mengandung 1209 dan minimal panjang 7 digit
+    matches = [t for t in ocr_results if re.search(r"1209\d{3,}", t)]
+    if not matches:
+        return None
 
-    if matches:
-        # Ambil yang terpanjang atau pertama
-        return sorted(matches, key=len, reverse=True)[0]
-    return None
+    # Pilih hasil dengan panjang terpanjang (jika ada beberapa)
+    cleaned = [re.search(r"1209\d{3,}", m).group(0) for m in matches if re.search(r"1209\d{3,}", m)]
+    return max(cleaned, key=len) if cleaned else None
 
-# UI Streamlit
-st.set_page_config(page_title="OCR Rename 1209", layout="centered")
-st.title("📸 Rename Otomatis Gambar Berdasarkan Kode 1209xxx")
+# Judul Aplikasi
+st.set_page_config(page_title="OCR Rename App", layout="centered")
+st.title("📸 Rename Gambar Otomatis dengan OCR")
 
-uploaded_files = st.file_uploader("Unggah Gambar", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+# Upload file
+uploaded_files = st.file_uploader("Unggah gambar (JPG, JPEG, PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 if uploaded_files:
     renamed_count = 0
@@ -73,9 +77,9 @@ if uploaded_files:
             used_path = compress_image(file_path, compressed_path)
 
             img = Image.open(used_path)
-            kode = detect_kode_1209(img)
+            kode = detect_full_kode(img)
 
-            if kode:
+            if kode and len(kode) >= 7:
                 ext = os.path.splitext(uploaded_file.name)[1]
                 new_filename = f"Hasil_{kode}_beres{ext}"
                 new_path = os.path.join(RENAMED_DIR, new_filename)
@@ -101,15 +105,15 @@ if uploaded_files:
                 except:
                     pass
 
-    # Ringkasan hasil
-    st.success(f"✅ Total gambar berhasil di-rename: {renamed_count}")
+    # Ringkasan
+    st.success(f"Total berhasil di-rename: {renamed_count}")
     if skipped_files:
-        st.warning(f"⚠️ Gagal membaca kode dari {len(skipped_files)} file:")
+        st.warning(f"Gagal membaca kode dari {len(skipped_files)} file:")
         st.code("\n".join(skipped_files))
 
-    # Tampilkan hasil
+    # Tampilkan file hasil rename
     if renamed_count:
-        st.subheader("📁 Unduh File yang Telah Diubah Namanya")
+        st.subheader("📁 Unduh File yang Telah Diubah")
         for fname in os.listdir(RENAMED_DIR):
             fpath = os.path.join(RENAMED_DIR, fname)
             with open(fpath, "rb") as f:
@@ -117,4 +121,4 @@ if uploaded_files:
 
 # Footer
 st.markdown("---")
-st.markdown("📌 Aplikasi ini mendeteksi dan menamai ulang gambar berdasarkan kode wilayah 1209xxx yang terdeteksi secara otomatis dari gambar.")
+st.markdown("📌 Aplikasi ini membaca kode wilayah dalam gambar dan mengganti namanya secara otomatis.")
