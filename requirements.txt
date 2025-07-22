@@ -3,4 +3,3 @@ easyocr
 opencv-python-headless
 numpy
 filelock
-
