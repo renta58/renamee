@@ -1,158 +1,145 @@
-import streamlit as st
-import os
-import re
-import uuid
-import shutil
-import zipfile
-import numpy as np
-import requests
-from io import BytesIO
-from PIL import Image, ImageEnhance, ImageFilter
+""import streamlit as st
 import easyocr
+import os
+import zipfile
+import tempfile
+import shutil
+import re
+from datetime import datetime
+from PIL import Image
+from io import BytesIO
 
-# Inisialisasi OCR
-reader = easyocr.Reader(['id', 'en'])
+# Inisialisasi EasyOCR sekali
+reader = easyocr.Reader(['en'], gpu=False)
 
-# Buat session user unik
-if 'user_id' not in st.session_state:
-    st.session_state.user_id = str(uuid.uuid4())[:8]
+# Buat folder sesi sementara untuk setiap user
+TEMP_DIR = "temp_sessions"
+os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Buat direktori upload dan rename per user
-UPLOAD_DIR = os.path.join("uploaded", st.session_state.user_id)
-RENAMED_DIR = os.path.join("renamed", st.session_state.user_id)
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(RENAMED_DIR, exist_ok=True)
+# Fungsi membuat nama hasil
+def generate_new_filename(text_detected):
+    match = re.search(r'\d{3,}', text_detected)
+    if match:
+        return f"Hasil_{match.group(0)}_beres"
+    return None
 
-# Fungsi kompresi
-
-def compress_image(input_path, output_path, max_size=(1024, 1024), quality=70):
+# Fungsi untuk membaca gambar dengan OCR
+def extract_text(image_path):
     try:
-        img = Image.open(input_path)
-        img.thumbnail(max_size)
-        img.save(output_path, optimize=True, quality=quality)
-        return output_path
-    except:
-        return input_path
+        result = reader.readtext(image_path, detail=0)
+        return ' '.join(result)
+    except Exception as e:
+        return ""
 
-# Preprocessing gambar
-
-def preprocess(img):
-    img = img.convert("L")
-    img = ImageEnhance.Contrast(img).enhance(2.0)
-    img = img.filter(ImageFilter.SHARPEN)
-    return img
-
-# Deteksi kode wilayah (regex 1209xxxxx)
-
-def detect_kode(img):
-    ocr_results = []
-    for angle in [0, 90, 180, 270]:
-        rotated = img.rotate(angle, expand=True)
-        processed = preprocess(rotated)
-        img_array = np.array(processed)
-        texts = reader.readtext(img_array, detail=0)
-        ocr_results.extend(texts)
-    combined = " ".join(ocr_results)
-    matches = re.findall(r"1209\\d{3,}", combined)
-    return max(matches, key=len) if matches else None
-
-# Proses file: rename dan pindah
-
-def process_file(file_path, original_name):
-    compressed_path = os.path.join(UPLOAD_DIR, f"compressed_{original_name}")
-    used_path = compress_image(file_path, compressed_path)
-    try:
-        img = Image.open(used_path)
-        kode = detect_kode(img)
-        if kode:
-            ext = os.path.splitext(original_name)[1]
-            new_name = f"Hasil_{kode}_beres{ext}"
-            target_path = os.path.join(RENAMED_DIR, new_name)
-            counter = 1
-            while os.path.exists(target_path):
-                new_name = f"Hasil_{kode}_{counter}_beres{ext}"
-                target_path = os.path.join(RENAMED_DIR, new_name)
-                counter += 1
-            shutil.move(file_path, target_path)
-            return new_name, target_path
-    except:
-        pass
-    return None, None
-
-# UI utama
-st.set_page_config(page_title="OCR Rename App", layout="centered")
-st.title("📸 Rename Gambar Otomatis dengan OCR (Multi-Source)")
-
-uploaded_files = st.file_uploader("Unggah gambar atau file ZIP:", type=["jpg", "jpeg", "png", "zip"], accept_multiple_files=True)
-gdrive_url = st.text_input("Atau masukkan link Google Drive (direct public):")
-
-if uploaded_files or gdrive_url:
-    st.session_state.to_process = []
-
-    # Proses file dari uploader
-    for uploaded_file in uploaded_files:
-        file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-
-        if uploaded_file.name.lower().endswith(".zip"):
-            try:
-                with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                    zip_ref.extractall(UPLOAD_DIR)
-            except:
-                st.warning(f"Gagal ekstrak ZIP: {uploaded_file.name}")
+# Fungsi rename file
+def process_and_rename_images(image_files, session_dir):
+    renamed_files = []
+    failed_files = []
+    for file in image_files:
+        img_path = os.path.join(session_dir, file.name)
+        with open(img_path, "wb") as f:
+            f.write(file.read())
+        text = extract_text(img_path)
+        new_name = generate_new_filename(text)
+        if new_name:
+            new_path = os.path.join(session_dir, new_name + os.path.splitext(file.name)[1])
+            os.rename(img_path, new_path)
+            renamed_files.append(new_path)
         else:
-            st.session_state.to_process.append((file_path, uploaded_file.name))
+            failed_files.append(file.name)
+    return renamed_files, failed_files
 
-    # Proses dari Google Drive
-    if gdrive_url.strip():
-        try:
-            r = requests.get(gdrive_url.strip())
-            if r.status_code == 200:
-                filename = gdrive_url.split("/")[-1] + ".jpg"
-                gdrive_path = os.path.join(UPLOAD_DIR, filename)
-                with open(gdrive_path, "wb") as f:
-                    f.write(r.content)
-                st.session_state.to_process.append((gdrive_path, filename))
+# Fungsi ekstrak ZIP
+def handle_zip_upload(zip_file, session_dir):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir)
+        image_files = []
+        for root, _, files in os.walk(temp_dir):
+            for file in files:
+                path = os.path.join(root, file)
+                ext = os.path.splitext(file)[1].lower()
+                if ext in [".jpg", ".jpeg", ".png"]:
+                    dest_path = os.path.join(session_dir, file)
+                    shutil.copy(path, dest_path)
+                    image_files.append(dest_path)
+        return image_files
+
+# Fungsi ZIP hasil
+
+def zip_renamed_files(renamed_paths):
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zipf:
+        for path in renamed_paths:
+            zipf.write(path, arcname=os.path.basename(path))
+    zip_buffer.seek(0)
+    return zip_buffer
+
+# STREAMLIT APP
+st.set_page_config(page_title="OCR Rename App", layout="centered")
+st.title("📸 Rename Otomatis Gambar Berdasarkan Teks (EasyOCR)")
+
+# Buat session folder unik
+if "session_id" not in st.session_state:
+    st.session_state.session_id = datetime.now().strftime("%Y%m%d%H%M%S")
+
+session_dir = os.path.join(TEMP_DIR, st.session_state.session_id)
+os.makedirs(session_dir, exist_ok=True)
+
+uploaded_files = st.file_uploader("Upload gambar (jpg/jpeg/png) atau ZIP:", type=["jpg", "jpeg", "png", "zip"], accept_multiple_files=True)
+
+st.markdown("Atau masukkan link Google Drive (direct public):")
+gdrive_link = st.text_input(" ")
+
+# Tombol proses manual
+if st.button("🚀 Lakukan Proses Rename"):
+    all_image_paths = []
+    failed_total = []
+
+    # Tangani upload
+    if uploaded_files:
+        for file in uploaded_files:
+            if file.name.lower().endswith(".zip"):
+                extracted = handle_zip_upload(file, session_dir)
+                all_image_paths.extend(extracted)
             else:
-                st.error("Gagal mengunduh dari link. Pastikan file bisa diakses publik.")
-        except:
-            st.error("Terjadi kesalahan saat mengambil file dari Google Drive.")
+                file_path = os.path.join(session_dir, file.name)
+                with open(file_path, "wb") as f:
+                    f.write(file.read())
+                all_image_paths.append(file_path)
 
-    if st.button("🔁 Lakukan Proses Rename"):
-        renamed_files = []
-        skipped = []
+    # Jalankan OCR dan rename
+    renamed_paths = []
+    failed_files = []
+    for path in all_image_paths:
+        text = extract_text(path)
+        new_name = generate_new_filename(text)
+        if new_name:
+            new_path = os.path.join(session_dir, new_name + os.path.splitext(path)[1])
+            os.rename(path, new_path)
+            renamed_paths.append(new_path)
+        else:
+            failed_files.append(os.path.basename(path))
 
-        for root, _, files in os.walk(UPLOAD_DIR):
-            for fname in files:
-                if fname.lower().endswith((".jpg", ".jpeg", ".png")):
-                    fpath = os.path.join(root, fname)
-                    new_name, new_path = process_file(fpath, fname)
-                    if new_path:
-                        renamed_files.append((new_name, new_path))
-                    else:
-                        skipped.append(fname)
+    # Tampilkan hasil
+    st.success(f"Total berhasil di-rename: {len(renamed_paths)}")
+    if failed_files:
+        st.warning(f"Gagal dibaca dari: {len(failed_files)} file")
+        for f in failed_files:
+            st.code(f)
 
-        # Ringkasan hasil
-        st.success(f"✅ Total berhasil di-rename: {len(renamed_files)}")
-        if skipped:
-            st.warning(f"⚠️ Gagal dibaca dari: {len(skipped)} file")
-            st.code("\n".join(skipped))
+    # Unduh hasil satuan
+    for renamed in renamed_paths:
+        with open(renamed, "rb") as f:
+            btn = st.download_button(
+                label=f"⬇️ Unduh: {os.path.basename(renamed)}",
+                data=f,
+                file_name=os.path.basename(renamed)
+            )
 
-        # Unduhan hasil satu per satu
-        if renamed_files:
-            st.subheader("📁 Unduh File Rename")
-            for fname, fpath in renamed_files:
-                with open(fpath, "rb") as f:
-                    st.download_button(f"⬇️ {fname}", f, file_name=fname)
+    # Unduh semua ZIP
+    if renamed_paths:
+        zip_file = zip_renamed_files(renamed_paths)
+        st.download_button("📦 Unduh Semua Hasil (ZIP)", data=zip_file, file_name="hasil_rename.zip")
 
-            # Unduhan ZIP seluruh hasil
-            zip_output = f"renamed/{st.session_state.user_id}.zip"
-            with zipfile.ZipFile(zip_output, "w") as zipf:
-                for fname, fpath in renamed_files:
-                    zipf.write(fpath, arcname=fname)
-            with open(zip_output, "rb") as f:
-                st.download_button("📦 Unduh Semua (ZIP)", f, file_name="hasil_rename.zip")
-
-st.markdown("---")
-st.markdown("📌 Aplikasi mendukung unggahan gambar, ZIP folder, dan link Google Drive publik.")
+st.caption("\n© 2025 - App by Renta with EasyOCR + Streamlit")
