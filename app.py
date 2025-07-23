@@ -123,5 +123,5 @@ if uploaded_files:
 
 # Footer
 st.markdown("---")
-st.markdown("📌 Aplikasi menggunakan OCR EasyOCR untuk merename file gambar berdasarkan kode wilayah `1209xxxxx`. Setiap pengguna punya folder terpisah agar tidak bentrok.")
+st.markdown("📌 MENGGUNAKAN OCR EayOCR untuk melakukan prpses rename")
 
