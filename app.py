@@ -75,7 +75,7 @@ username = "default_user"
 tab1, tab2, tab3 = st.tabs(["📄 Upload Gambar", "📁 Rename dari Arsip ZIP", "📜 Riwayat Rename"])
 
 with tab1:
-    st.header("\ud83d\udcc4 Upload dan Rename File")
+    st.header("📝 Upload dan Rename File")  
     uploaded_file = st.file_uploader("Unggah Gambar", type=['jpg', 'jpeg', 'png'])
     temp_info = {}
 
@@ -111,7 +111,7 @@ with tab1:
 
 # === Tab 2 ===
 with tab2:
-    st.header("\ud83d\udcc1 Rename Gambar dari Arsip ZIP")
+    st.header(" Rename Gambar dari Arsip ZIP")
     archive_file = st.file_uploader("Unggah file .zip", type=["zip"])
 
     if archive_file:
@@ -193,7 +193,7 @@ with tab2:
 
 # === Tab 3 ===
 with tab3:
-    st.header("\ud83d\udcdc Riwayat Rename")
+    st.header("Riwayat Rename")
     riwayat = get_user_riwayat(username)
 
     if not riwayat:
