@@ -1,5 +1,8 @@
-streamlit==1.33.0
-easyocr==1.7.1
-opencv-python-headless==4.9.0.80
+streamlit
 Pillow
 numpy
+torch==2.7.1
+easyocr==1.7.1
+opencv-python-headless
+pyunpack
+patool
