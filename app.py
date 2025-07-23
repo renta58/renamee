@@ -58,7 +58,7 @@ def detect_full_kode(img):
 
 # UI
 st.set_page_config(page_title="OCR Rename App", layout="centered")
-st.title("📸 Rename Gambar Otomatis dengan OCR (Per User)")
+st.title("📸 Rename Gambar Otomatis dengan OCR")
 
 uploaded_files = st.file_uploader("Unggah gambar (JPG, JPEG, PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
@@ -118,10 +118,7 @@ if uploaded_files:
             with open(fpath, "rb") as f:
                 st.download_button(f"⬇️ {fname}", f, file_name=fname)
 
-# Reset Session
-if st.button("🔄 Reset Aplikasi"):
-    st.session_state.clear()
-    st.experimental_rerun()
+
 
 st.markdown("---")
-st.markdown("📌 Aplikasi ini membaca kode wilayah dalam gambar dan mengganti namanya secara otomatis. Kode yang dikenali: 1209xxxxx.")
+st.markdown("📌 APLIKASI UNTUK MERENAME GAMBAR ")
