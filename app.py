@@ -1,126 +1,216 @@
 import streamlit as st
 import os
-import re
-import shutil
-import uuid
-import numpy as np
+import sqlite3
+from datetime import datetime
 from PIL import Image, ImageEnhance, ImageFilter
 import easyocr
+import numpy as np
+import zipfile
+import tempfile
+import shutil
 
-# Inisialisasi OCR
-reader = easyocr.Reader(['id', 'en'], gpu=False)
+# === OCR dengan preprocessing dan rotasi ===
+def extract_kode_wilayah(image_path):
+    img = Image.open(image_path)
 
-# Buat session user unik
-if "user_id" not in st.session_state:
-    st.session_state.user_id = str(uuid.uuid4())[:8]
+    def preprocess(img):
+        img = img.convert('L')
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(2.0)
+        img = img.filter(ImageFilter.SHARPEN)
+        return img
 
-# Folder per user
-BASE_UPLOAD_DIR = "uploaded"
-BASE_RENAMED_DIR = "renamed"
-UPLOAD_DIR = os.path.join(BASE_UPLOAD_DIR, st.session_state.user_id)
-RENAMED_DIR = os.path.join(BASE_RENAMED_DIR, st.session_state.user_id)
+    kode_pattern = r'\b\d{14}\b'
+    best_result = None
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(RENAMED_DIR, exist_ok=True)
-
-# Kompresi gambar
-def compress_image(input_path, output_path, max_size=(1024, 1024), quality=70):
-    try:
-        img = Image.open(input_path)
-        img.thumbnail(max_size)
-        img.save(output_path, optimize=True, quality=quality)
-        return output_path
-    except Exception as e:
-        print(f"[ERROR] Kompresi gagal untuk {input_path}: {e}")
-        return input_path
-
-# Preprocess gambar
-def preprocess(img):
-    img = img.convert("L")  # grayscale
-    img = ImageEnhance.Contrast(img).enhance(2.0)
-    img = img.filter(ImageFilter.SHARPEN)
-    return img
-
-# Deteksi kode
-def detect_full_kode(img):
-    ocr_results = []
     for angle in [0, 90, 180, 270]:
         rotated = img.rotate(angle, expand=True)
         processed = preprocess(rotated)
-        img_array = np.array(processed)
-        texts = reader.readtext(img_array, detail=0)
-        ocr_results.extend(texts)
+        np_img = np.array(processed)
+        result = reader.readtext(np_img, detail=0)
+        for text in result:
+            if any(c.isdigit() for c in text):
+                match = [t for t in result if len(t) == 14 and t.isdigit()]
+                if match:
+                    return match[0]
+                elif not best_result:
+                    best_result = text
 
-    combined_text = " ".join(ocr_results)
-    matches = re.findall(r"1209\d{3,}", combined_text)
-    return max(matches, key=len) if matches else None
+    return best_result if best_result else None
 
-# UI
-st.set_page_config(page_title="OCR Rename App", layout="centered")
-st.title("📸 Rename Gambar Otomatis dengan OCR")
+# === Setup ===
+st.set_page_config(layout="wide")
+st.title("📝 Rename File Gambar")
+reader = easyocr.Reader(['id', 'en'])
+UPLOAD_FOLDER = 'uploaded_files'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Upload
-uploaded_files = st.file_uploader("Unggah gambar (JPG, JPEG, PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+# === DB ===
+conn = sqlite3.connect('riwayat.db', check_same_thread=False)
+c = conn.cursor()
+c.execute('''
+CREATE TABLE IF NOT EXISTS riwayat (
+    username TEXT,
+    waktu TEXT,
+    nama_awal TEXT,
+    nama_akhir TEXT
+)
+''')
+conn.commit()
 
-# Tombol proses rename
-if uploaded_files:
-    st.info("✅ File berhasil diunggah. Klik tombol di bawah untuk memulai proses rename.")
-    if st.button("🚀 Lakukan Proses Rename Sekarang"):
-        renamed_count = 0
-        skipped_files = []
-        renamed_files = []
+def insert_riwayat(username, waktu, awal, akhir):
+    c.execute("INSERT INTO riwayat VALUES (?, ?, ?, ?)", (username, waktu, awal, akhir))
+    conn.commit()
 
-        for uploaded_file in uploaded_files:
-            file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
-            with open(file_path, "wb") as f:
+def get_user_riwayat(username):
+    c.execute("SELECT waktu, nama_awal, nama_akhir FROM riwayat WHERE username = ? ORDER BY waktu DESC", (username,))
+    return c.fetchall()
+
+username = "default_user"
+
+tab1, tab2, tab3 = st.tabs(["📤 Upload Gambar", "📁 Rename dari Arsip ZIP", "📜 Riwayat Rename"])
+
+with tab1:
+    st.header("📤 Upload Gambar")
+    uploaded_file = st.file_uploader("Unggah gambar", type=['jpg', 'jpeg', 'png'])
+
+    if uploaded_file is not None:
+        with st.spinner("🔄 Sedang memproses gambar..."):
+            filename = uploaded_file.name
+            save_path = os.path.join(UPLOAD_FOLDER, filename)
+            with open(save_path, 'wb') as f:
                 f.write(uploaded_file.getbuffer())
 
+            kode = extract_kode_wilayah(save_path)
+            if kode:
+                ext = os.path.splitext(filename)[-1]
+                base_name = f"Hasil_{kode}_beres"
+                new_name = f"{base_name}{ext}"
+                new_path = os.path.join(UPLOAD_FOLDER, new_name)
+
+                counter = 1
+                while os.path.exists(new_path):
+                    new_name = f"{base_name}_{counter}{ext}"
+                    new_path = os.path.join(UPLOAD_FOLDER, new_name)
+                    counter += 1
+
+                os.rename(save_path, new_path)
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                insert_riwayat(username, now, filename, new_name)
+                st.success(f"✅ Berhasil rename gambar menjadi: {new_name}")
+                with open(new_path, "rb") as f:
+                    st.download_button(
+                        label="Download Hasil Rename",
+                        data=f.read(),
+                        file_name=new_name,
+                        mime="image/jpeg"
+                    )
+            else:
+                st.warning("⚠️ Gagal mengenali kode wilayah.")
+
+with tab2:
+    st.header("📁 Rename Gambar dari Arsip ZIP")
+
+    archive_file = st.file_uploader("Unggah file .zip", type=["zip"])
+
+    if archive_file:
+        with st.spinner("📂 Mengekstrak file..."):
+            temp_dir = tempfile.mkdtemp()
+            archive_path = os.path.join(temp_dir, archive_file.name)
+
+            with open(archive_path, "wb") as f:
+                f.write(archive_file.read())
+
+            extract_dir = os.path.join(temp_dir, "extracted")
+            os.makedirs(extract_dir, exist_ok=True)
+
             try:
-                compressed_path = os.path.join(UPLOAD_DIR, f"compressed_{uploaded_file.name}")
-                used_path = compress_image(file_path, compressed_path)
-
-                img = Image.open(used_path)
-                kode = detect_full_kode(img)
-
-                if kode and len(kode) >= 8:
-                    ext = os.path.splitext(uploaded_file.name)[1]
-                    base_name = f"Hasil_{kode}_beres{ext}"
-                    new_path = os.path.join(RENAMED_DIR, base_name)
-
-                    counter = 1
-                    while os.path.exists(new_path):
-                        base_name = f"Hasil_{kode}_{counter}_beres{ext}"
-                        new_path = os.path.join(RENAMED_DIR, base_name)
-                        counter += 1
-
-                    shutil.move(file_path, new_path)
-                    renamed_files.append((base_name, new_path))
-                    renamed_count += 1
-                else:
-                    skipped_files.append(uploaded_file.name)
-
+                with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+                    zip_ref.extractall(extract_dir)
+                    st.success("✅ ZIP berhasil diekstrak.")
             except Exception as e:
-                skipped_files.append(uploaded_file.name)
+                st.error(f"❌ Gagal ekstrak ZIP: {e}")
+                shutil.rmtree(temp_dir)
+                st.stop()
 
-            finally:
-                if os.path.exists(compressed_path):
-                    try:
-                        os.remove(compressed_path)
-                    except:
-                        pass
+            renamed_dir = os.path.join(temp_dir, "renamed")
+            os.makedirs(renamed_dir, exist_ok=True)
+            count = 0
 
-        # Ringkasan
-        st.success(f"🎉 Total berhasil di-rename: {renamed_count}")
-        if skipped_files:
-            st.warning("⚠️ Gagal membaca kode dari file berikut:")
-            st.code("\n".join(skipped_files))
+            image_found = False
 
-        if renamed_files:
-            st.subheader("📁 Unduh File yang Telah Diubah")
-            for fname, fpath in renamed_files:
-                with open(fpath, "rb") as f:
-                    st.download_button(f"⬇️ {fname}", f, file_name=fname)
+            for root, _, files in os.walk(extract_dir):
+                for file in files:
+                    if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        image_found = True
+                        full_path = os.path.join(root, file)
+                        st.write(f"🔍 Memproses file: {file}")
 
-# Footer
-st.markdown("---")
-st.markdown("📌 Aplikasi menggunakan OCR EasyOCR untuk merename file gambar berdasarkan kode wilayah `1209xxxxx`. Setiap pengguna punya folder terpisah agar tidak bentrok.")
+                        try:
+                            kode = extract_kode_wilayah(full_path)
+                            if kode:
+                                ext = os.path.splitext(file)[-1]
+                                new_name = f"Hasil_{kode}_beres{ext}"
+                                new_path = os.path.join(renamed_dir, new_name)
+
+                                counter = 1
+                                while os.path.exists(new_path):
+                                    new_name = f"Hasil_{kode}_beres_{counter}{ext}"
+                                    new_path = os.path.join(renamed_dir, new_name)
+                                    counter += 1
+
+                                shutil.copy(full_path, new_path)
+                                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                insert_riwayat(username, now, file, new_name)
+                                count += 1
+                            else:
+                                st.warning(f"⚠️ Kode wilayah tidak ditemukan di: {file}")
+                        except Exception as e:
+                            st.error(f"❌ Gagal proses {file}: {e}")
+
+            if not image_found:
+                st.warning("⚠️ Tidak ditemukan file gambar (.jpg/.jpeg/.png) dalam ZIP.")
+                shutil.rmtree(temp_dir)
+                st.stop()
+
+            # ZIP hasil rename
+            try:
+                zip_output_path = os.path.join(temp_dir, "hasil_rename.zip")
+                with zipfile.ZipFile(zip_output_path, 'w') as zipf:
+                    for file in os.listdir(renamed_dir):
+                        file_path = os.path.join(renamed_dir, file)
+                        zipf.write(file_path, arcname=file)
+
+                st.success(f"✅ Selesai! {count} gambar berhasil di-rename.")
+
+                with open(zip_output_path, "rb") as f:
+                    st.download_button(
+                        label="⬇️ Download Hasil Rename (ZIP)",
+                        data=f.read(),
+                        file_name="hasil_rename.zip",
+                        mime="application/zip"
+                    )
+            except Exception as e:
+                st.error(f"❌ Gagal membuat ZIP hasil: {e}")
+
+            shutil.rmtree(temp_dir)
+
+with tab3:
+    st.header("📜 Riwayat Rename")
+    riwayat = get_user_riwayat(username)
+
+    for waktu, awal, akhir in riwayat:
+        path_file = os.path.join(UPLOAD_FOLDER, akhir)
+        col1, col2 = st.columns([6, 1])
+        with col1:
+            st.markdown(f"{waktu} | {awal} ➔ {akhir}")
+        with col2:
+            if os.path.exists(path_file):
+                with open(path_file, "rb") as f:
+                    st.download_button(
+                        label="⬇️",
+                        data=f.read(),
+                        file_name=akhir,
+                        mime="image/jpeg",
+                        key=path_file
+                    )
