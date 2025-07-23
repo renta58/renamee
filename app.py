@@ -70,43 +70,45 @@ username = "default_user"
 
 tab1, tab2, tab3 = st.tabs(["📤 Upload Gambar", "📁 Rename dari Arsip ZIP", "📜 Riwayat Rename"])
 
+# === Ubah bagian ini di tab1 ===
 with tab1:
-    st.header("📤 Upload Gambar")
+    st.header("📄 Upload Gambar")
     uploaded_file = st.file_uploader("Unggah gambar", type=['jpg', 'jpeg', 'png'])
 
     if uploaded_file is not None:
-        with st.spinner("🔄 Sedang memproses gambar..."):
-            filename = uploaded_file.name
-            save_path = os.path.join(UPLOAD_FOLDER, filename)
-            with open(save_path, 'wb') as f:
-                f.write(uploaded_file.getbuffer())
+        filename = uploaded_file.name
+        save_path = os.path.join(UPLOAD_FOLDER, filename)
 
-            kode = extract_kode_wilayah(save_path)
-            if kode:
-                ext = os.path.splitext(filename)[-1]
-                base_name = f"Hasil_{kode}_beres"
-                new_name = f"{base_name}{ext}"
-                new_path = os.path.join(UPLOAD_FOLDER, new_name)
+        with open(save_path, 'wb') as f:
+            f.write(uploaded_file.getbuffer())
 
-                counter = 1
-                while os.path.exists(new_path):
-                    new_name = f"{base_name}_{counter}{ext}"
+        st.success(f"✅ Gambar berhasil diunggah: {filename}")
+
+        if st.button("🔄 Proses Rename"):
+            with st.spinner("🔄 Sedang memproses gambar..."):
+                kode = extract_kode_wilayah(save_path)
+
+                if kode:
+                    ext = os.path.splitext(filename)[-1]
+                    new_name = f"Hasil_{kode}_beres{ext}"
                     new_path = os.path.join(UPLOAD_FOLDER, new_name)
-                    counter += 1
 
-                os.rename(save_path, new_path)
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                insert_riwayat(username, now, filename, new_name)
-                st.success(f"✅ Berhasil rename gambar menjadi: {new_name}")
-                with open(new_path, "rb") as f:
-                    st.download_button(
-                        label="Download Hasil Rename",
-                        data=f.read(),
-                        file_name=new_name,
-                        mime="image/jpeg"
-                    )
-            else:
-                st.warning("⚠️ Gagal mengenali kode wilayah.")
+                    # Timpa jika sudah ada
+                    shutil.copy(save_path, new_path)
+
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    insert_riwayat(username, now, filename, new_name)
+
+                    st.success(f"✅ Berhasil rename gambar menjadi: {new_name}")
+                    with open(new_path, "rb") as f:
+                        st.download_button(
+                            label="Download Hasil Rename",
+                            data=f.read(),
+                            file_name=new_name,
+                            mime="image/jpeg"
+                        )
+                else:
+                    st.warning("⚠️ Gagal mengenali kode wilayah.")
 
 with tab2:
     st.header("📁 Rename Gambar dari Arsip ZIP")
@@ -199,18 +201,46 @@ with tab3:
     st.header("📜 Riwayat Rename")
     riwayat = get_user_riwayat(username)
 
-    for waktu, awal, akhir in riwayat:
-        path_file = os.path.join(UPLOAD_FOLDER, akhir)
-        col1, col2 = st.columns([6, 1])
-        with col1:
-            st.markdown(f"{waktu} | {awal} ➔ {akhir}")
-        with col2:
-            if os.path.exists(path_file):
-                with open(path_file, "rb") as f:
-                    st.download_button(
-                        label="⬇️",
-                        data=f.read(),
-                        file_name=akhir,
-                        mime="image/jpeg",
-                        key=path_file
-                    )
+    if not riwayat:
+        st.info("📭 Belum ada riwayat rename.")
+        st.stop()
+
+    opsi_download = st.radio("Pilih cara unduh:", ("⬇️ Per File", "📦 Unduh Semua (ZIP)"))
+
+    if opsi_download == "⬇️ Per File":
+        for waktu, awal, akhir in riwayat:
+            path_file = os.path.join(UPLOAD_FOLDER, akhir)
+            col1, col2 = st.columns([6, 1])
+            with col1:
+                st.markdown(f"{waktu} | {awal} ➔ {akhir}")
+            with col2:
+                if os.path.exists(path_file):
+                    with open(path_file, "rb") as f:
+                        st.download_button(
+                            label="⬇️",
+                            data=f.read(),
+                            file_name=akhir,
+                            mime="image/jpeg",
+                            key=path_file
+                        )
+                else:
+                    st.error(f"❌ File tidak ditemukan: {akhir}")
+    else:
+        with st.spinner("📦 Menyiapkan file ZIP..."):
+            temp_dir = tempfile.mkdtemp()
+            zip_path = os.path.join(temp_dir, "riwayat_rename.zip")
+
+            with zipfile.ZipFile(zip_path, "w") as zipf:
+                for _, _, nama_akhir in riwayat:
+                    file_path = os.path.join(UPLOAD_FOLDER, nama_akhir)
+                    if os.path.exists(file_path):
+                        zipf.write(file_path, arcname=nama_akhir)
+
+            with open(zip_path, "rb") as f:
+                st.download_button(
+                    label="⬇️ Download Semua Riwayat (ZIP)",
+                    data=f.read(),
+                    file_name="riwayat_rename.zip",
+                    mime="application/zip"
+                )
+            shutil.rmtree(temp_dir)
