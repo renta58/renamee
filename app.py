@@ -1,94 +1,126 @@
-import os
-import shutil
-import sqlite3
 import streamlit as st
-from datetime import datetime
-from PIL import Image
+import os
+import re
+import shutil
+import uuid
+import numpy as np
+from PIL import Image, ImageEnhance, ImageFilter
 import easyocr
 
-# Set halaman Streamlit
+# Inisialisasi OCR
+reader = easyocr.Reader(['id', 'en'], gpu=False)
+
+# Buat session user unik
+if "user_id" not in st.session_state:
+    st.session_state.user_id = str(uuid.uuid4())[:8]
+
+# Folder per user
+BASE_UPLOAD_DIR = "uploaded"
+BASE_RENAMED_DIR = "renamed"
+UPLOAD_DIR = os.path.join(BASE_UPLOAD_DIR, st.session_state.user_id)
+RENAMED_DIR = os.path.join(BASE_RENAMED_DIR, st.session_state.user_id)
+
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(RENAMED_DIR, exist_ok=True)
+
+# Kompresi gambar
+def compress_image(input_path, output_path, max_size=(1024, 1024), quality=70):
+    try:
+        img = Image.open(input_path)
+        img.thumbnail(max_size)
+        img.save(output_path, optimize=True, quality=quality)
+        return output_path
+    except Exception as e:
+        print(f"[ERROR] Kompresi gagal untuk {input_path}: {e}")
+        return input_path
+
+# Preprocess gambar
+def preprocess(img):
+    img = img.convert("L")  # grayscale
+    img = ImageEnhance.Contrast(img).enhance(2.0)
+    img = img.filter(ImageFilter.SHARPEN)
+    return img
+
+# Deteksi kode
+def detect_full_kode(img):
+    ocr_results = []
+    for angle in [0, 90, 180, 270]:
+        rotated = img.rotate(angle, expand=True)
+        processed = preprocess(rotated)
+        img_array = np.array(processed)
+        texts = reader.readtext(img_array, detail=0)
+        ocr_results.extend(texts)
+
+    combined_text = " ".join(ocr_results)
+    matches = re.findall(r"1209\d{3,}", combined_text)
+    return max(matches, key=len) if matches else None
+
+# UI
 st.set_page_config(page_title="OCR Rename App", layout="centered")
+st.title("📸 Rename Gambar Otomatis dengan OCR")
 
-# Inisialisasi OCR reader
-reader = easyocr.Reader(['en'])
+# Upload
+uploaded_files = st.file_uploader("Unggah gambar (JPG, JPEG, PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-# Inisialisasi folder
-UPLOAD_FOLDER = "uploads"
-RENAMED_FOLDER = "renamed_files"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(RENAMED_FOLDER, exist_ok=True)
-
-# Inisialisasi database
-def init_db():
-    conn = sqlite3.connect("rename_history.db")
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS rename_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        original_filename TEXT,
-        new_filename TEXT,
-        timestamp TEXT
-    )''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# Fungsi OCR dan Rename
-def ocr_and_rename(file_path):
-    result = reader.readtext(file_path, detail=0)
-    joined_text = "_".join(result).replace(" ", "").replace("\n", "").replace("/", "_")
-    
-    # Ambil kode yang diawali dengan '1209'
-    target_text = [t for t in joined_text.split("_") if t.startswith("1209")]
-    if not target_text:
-        return None
-    
-    kode = target_text[0]
-    new_name = f"Hasil_{kode}_beres.png"
-    new_path = os.path.join(RENAMED_FOLDER, new_name)
-
-    # Tidak menambahkan angka jika file sudah ada, cukup timpa ulang
-    shutil.copy(file_path, new_path)
-
-    # Simpan ke database
-    conn = sqlite3.connect("rename_history.db")
-    c = conn.cursor()
-    c.execute("INSERT INTO rename_history (original_filename, new_filename, timestamp) VALUES (?, ?, ?)",
-              (os.path.basename(file_path), new_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    conn.close()
-
-    return new_name
-
-# Judul Aplikasi
-st.title("📄 OCR Rename App (No Login)")
-
-# Upload File
-uploaded_files = st.file_uploader("📤 Upload Gambar (PNG/JPG/JPEG)", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
-
+# Tombol proses rename
 if uploaded_files:
-    st.info("Proses dimulai... mohon tunggu sebentar.")
-    for uploaded_file in uploaded_files:
-        file_path = os.path.join(UPLOAD_FOLDER, uploaded_file.name)
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
+    st.info("✅ File berhasil diunggah. Klik tombol di bawah untuk memulai proses rename.")
+    if st.button("🚀 Lakukan Proses Rename Sekarang"):
+        renamed_count = 0
+        skipped_files = []
+        renamed_files = []
 
-        renamed = ocr_and_rename(file_path)
-        if renamed:
-            st.success(f"✅ Berhasil di-rename: {renamed}")
-        else:
-            st.warning(f"⚠️ Tidak ditemukan kode yang dimulai dengan '1209' pada: {uploaded_file.name}")
+        for uploaded_file in uploaded_files:
+            file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
+            with open(file_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
 
-# Tampilkan Riwayat Rename
-st.subheader("📜 Riwayat Rename")
-conn = sqlite3.connect("rename_history.db")
-c = conn.cursor()
-c.execute("SELECT original_filename, new_filename, timestamp FROM rename_history ORDER BY id DESC")
-rows = c.fetchall()
-conn.close()
+            try:
+                compressed_path = os.path.join(UPLOAD_DIR, f"compressed_{uploaded_file.name}")
+                used_path = compress_image(file_path, compressed_path)
 
-if rows:
-    for row in rows:
-        st.write(f"🗂️ **{row[0]}** ➡️ **{row[1]}** ({row[2]})")
-else:
-    st.info("Belum ada file yang berhasil di-rename.")
+                img = Image.open(used_path)
+                kode = detect_full_kode(img)
+
+                if kode and len(kode) >= 8:
+                    ext = os.path.splitext(uploaded_file.name)[1]
+                    base_name = f"Hasil_{kode}_beres{ext}"
+                    new_path = os.path.join(RENAMED_DIR, base_name)
+
+                    counter = 1
+                    while os.path.exists(new_path):
+                        base_name = f"Hasil_{kode}_{counter}_beres{ext}"
+                        new_path = os.path.join(RENAMED_DIR, base_name)
+                        counter += 1
+
+                    shutil.move(file_path, new_path)
+                    renamed_files.append((base_name, new_path))
+                    renamed_count += 1
+                else:
+                    skipped_files.append(uploaded_file.name)
+
+            except Exception as e:
+                skipped_files.append(uploaded_file.name)
+
+            finally:
+                if os.path.exists(compressed_path):
+                    try:
+                        os.remove(compressed_path)
+                    except:
+                        pass
+
+        # Ringkasan
+        st.success(f"🎉 Total berhasil di-rename: {renamed_count}")
+        if skipped_files:
+            st.warning("⚠️ Gagal membaca kode dari file berikut:")
+            st.code("\n".join(skipped_files))
+
+        if renamed_files:
+            st.subheader("📁 Unduh File yang Telah Diubah")
+            for fname, fpath in renamed_files:
+                with open(fpath, "rb") as f:
+                    st.download_button(f"⬇️ {fname}", f, file_name=fname)
+
+# Footer
+st.markdown("---")
+st.markdown("📌 Aplikasi menggunakan OCR EasyOCR untuk merename file gambar berdasarkan kode wilayah `1209xxxxx`. Setiap pengguna punya folder terpisah agar tidak bentrok.")
