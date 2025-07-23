@@ -197,7 +197,7 @@ with tab3:
     riwayat = get_user_riwayat(username)
 
     if not riwayat:
-        st.info("\ud83d\udccd Belum ada riwayat rename.")
+        st.info("Belum ada riwayat rename.")
         st.stop()
 
     opsi_download = st.radio("Pilih cara unduh:", ("\u2b07\ufe0f Per File", "\ud83d\udcc6 Unduh Semua (ZIP)"))
@@ -215,7 +215,7 @@ with tab3:
                 else:
                     st.error(f"\u274c File tidak ditemukan: {akhir}")
     else:
-        with st.spinner("\ud83d\udcc6 Menyiapkan file ZIP..."):
+        with st.spinner(" Menyiapkan file ZIP..."):
             temp_dir = tempfile.mkdtemp()
             zip_path = os.path.join(temp_dir, "riwayat_rename.zip")
 
@@ -227,7 +227,7 @@ with tab3:
 
             with open(zip_path, "rb") as f:
                 st.download_button(
-                    label="\u2b07\ufe0f Download Semua Riwayat (ZIP)",
+                    label="Download Semua Riwayat (ZIP)",
                     data=f.read(),
                     file_name="riwayat_rename.zip",
                     mime="application/zip"
