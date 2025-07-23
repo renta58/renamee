@@ -72,7 +72,7 @@ username = "default_user"
 
 
 # === Tab 1 ===
-tab1, tab2, tab3 = st.tabs(["\ud83d\udcc4 Upload Gambar", "\ud83d\udcc1 Rename dari Arsip ZIP", "\ud83d\udcdc Riwayat Rename"])
+tab1, tab2, tab3 = st.tabs(["📄 Upload Gambar", "📁 Rename dari Arsip ZIP", "📜 Riwayat Rename"])
 
 with tab1:
     st.header("\ud83d\udcc4 Upload dan Rename File")
